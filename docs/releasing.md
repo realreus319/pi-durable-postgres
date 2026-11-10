@@ -8,18 +8,19 @@ intentionally differ.
 
 1. Ensure the npm organization grants the publisher permission for
    `@ainavite/pi-durable-postgres`.
-2. In the package's npm settings, add a GitHub Actions trusted publisher:
-   GitHub owner `realreus319`, repository `pi-durable-postgres`, workflow filename
-   `ci.yml`, environment `npm`.
-3. In the GitHub repository, create the `npm` environment. Add approval rules and
-   permitted release tags if required by the organization.
+2. Create a granular npm access token limited to `@ainavite/pi-durable-postgres`
+   with publish permission and bypass 2FA enabled.
+3. Add the token as the GitHub Actions repository secret `NPM_TOKEN`. Never commit
+   the token or place it in the workflow file.
 4. Protect release tags and review changes to the publish workflow. A pushed
-   matching version tag can publish after CI and environment approval.
+   matching version tag publishes after CI.
 
-The release job uses OIDC trusted publishing; it needs `id-token: write` and npm
-CLI 11.5.1 or later. It does not store a long-lived npm write token in GitHub.
-npm's trusted-publishing setup and its exact workflow/environment matching are
-documented in the [npm trusted publishers guide](https://docs.npmjs.com/trusted-publishers/).
+This token-based flow follows the maintainer's current choice not to enable 2FA.
+npm has announced that direct publishing with bypass-2FA tokens will be removed
+in January 2027. Automated publishing will need an authentication change before
+then; npm's Trusted Publisher setup requires an interactive 2FA challenge.
+See [npm access tokens](https://docs.npmjs.com/about-access-tokens/) and
+[npm Trusted Publishers](https://docs.npmjs.com/trusted-publishers/).
 
 ## Upstream release watch
 
@@ -46,19 +47,17 @@ assumption — the conformance suite is the gate.
 
 Branch pushes and PRs run tests but do not publish. A `v*` tag push runs the same
 matrix, then the release job verifies the package identity and exact tag/version
-match before calling `npm publish --access public`. If npm already contains this
+match before calling `npm publish --access public` with the `NPM_TOKEN` secret.
+If npm already contains this
 version with the exact same `gitHead`, the upload is skipped. A different or unknown
 commit is rejected instead of treating it as a successful release. Publishing runs
 `prepack` to build dist. CI uses the packageManager-pinned pnpm version.
 
-For the first publication, the package must exist on npm before its settings can
-be assigned a trusted publisher. An organization owner can make that initial
-publication from the clean, committed release checkout using an authenticated npm
-account. After the trusted publisher is configured, version tags publish from
-GitHub Actions without a write token.
+For token-based publishing, the `NPM_TOKEN` secret must have publish permission
+for this package. The token is not included in the repository or package.
 
 The consumer smoke test creates an isolated temporary project, installs the real
-tarball, type-checks without skipLibCheck, and imports the compiled package. It
+tarball, type-checks using the consuming app's `skipLibCheck` setting, and imports the compiled package. It
 does not contact a model provider or modify a database.
 
 Never reuse an already published npm version. Correct a bad release with a new
