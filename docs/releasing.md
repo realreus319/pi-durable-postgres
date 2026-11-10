@@ -43,7 +43,11 @@ assumption — the conformance suite is the gate.
   documentation and license must be included, but no secrets or test data.
 - Confirm live-deletion limitations and any changed adapter contracts are accurate.
 - Commit and push the reviewed changes, then deliberately create/push a tag
-  matching package.json, e.g. `v0.3.0`.
+  matching package.json, e.g. `v0.3.1` for the next release.
+
+Version `0.3.0` was initially published from commit `e90e868`. Do not tag the
+newer workflow commit as `v0.3.0`; the release guard correctly rejects a version
+already published from a different commit.
 
 Branch pushes and PRs run tests but do not publish. A `v*` tag push runs the same
 matrix, then the release job verifies the package identity and exact tag/version
