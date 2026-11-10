@@ -1,12 +1,12 @@
-# @netzlabor/pi-durable-postgres
+# @ainavite/pi-durable-postgres
 
 A PostgreSQL storage backend for
 [`@earendil-works/pi-durable`](https://github.com/earendil-works/pi/tree/main/packages/durable).
 This is an **SDK library**, not a Pi Coding Agent extension: install it with your
 application's package manager, not `pi install`.
 
-- **Source:** [j-koester/pi-durable-postgres](https://github.com/j-koester/pi-durable-postgres)
-- **npm package:** `@netzlabor/pi-durable-postgres`
+- **Source:** [realreus319/pi-durable-postgres](https://github.com/realreus319/pi-durable-postgres)
+- **npm package:** `@ainavite/pi-durable-postgres`
 - **Status:** Alpha. Upstream Pi Durable is experimental; its API can change between releases.
 
 ## Compatibility
@@ -15,6 +15,7 @@ application's package manager, not `pi install`.
 |---|---|---|---|
 | 0.1.0 | 1.0.2 / 1.0.2 | Node.js >=22.19.0 | PostgreSQL 17 tested |
 | 0.1.1 | 1.0.3 / 1.0.3 | Node.js >=22.19.0 | PostgreSQL 17 tested |
+| 0.3.0 | 1.5.1 / 1.5.1 | Node.js >=22.19.0 | PostgreSQL 17 tested |
 
 CI targets Node 22.19.0 and 24. Peer versions are deliberately pinned to the
 validated upstream release. Other PostgreSQL versions and drivers are not yet
@@ -41,15 +42,15 @@ is enforced with an advisory lock. Unrelated schemas may have separate owners.
 
 **Live deletion is not implemented yet.** The current delete helper refuses to run
 while a storage owns the schema. Safe live deletion also needs Harness admission,
-task, cache and watch coordination that Pi Durable 1.0.3 still does not publicly expose.
+task, cache and watch coordination that Pi Durable 1.5.1 still does not publicly expose.
 See the [live-deletion design](docs/live-deletion.md) for the intended integration.
 
 ## Quick start
 
-Install the alpha release:
+Install the 0.3.0 release:
 
 ```bash
-npm install @netzlabor/pi-durable-postgres @earendil-works/pi-durable@1.0.3 @earendil-works/chord@1.0.3 @earendil-works/pi-ai@1.0.3
+npm install @ainavite/pi-durable-postgres @earendil-works/pi-durable@1.5.1 @earendil-works/chord@1.5.1 @earendil-works/pi-ai@1.5.1
 export DATABASE_URL='postgres://app:password@localhost:5432/agent_state'
 ```
 
@@ -57,7 +58,7 @@ export DATABASE_URL='postgres://app:password@localhost:5432/agent_state'
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { Harness, createRegistry } from "@earendil-works/pi-durable";
-import { openNodePostgresStorage } from "@netzlabor/pi-durable-postgres";
+import { openNodePostgresStorage } from "@ainavite/pi-durable-postgres";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("Set DATABASE_URL");
@@ -134,10 +135,10 @@ storage tables directly while a Harness owns them.
   It closes storage after the Harness's admitted work settles. Database close drains
   already admitted operations and rejects new ones.
 
-### Progress commits (Pi Durable 1.0.3)
+### Progress commits (Pi Durable 1.5.1)
 
 Remote databases may benefit from less frequent intermediate progress writes.
-Pi Durable 1.0.3 adds a `settings.progress` option to `Harness.open`, for example:
+Pi Durable 1.5.1 supports a `settings.progress` option to `Harness.open`, for example:
 
 ```typescript
 const settings = {
@@ -158,7 +159,7 @@ watches and task recovery still belong to the open Harness.
 
 ```typescript
 import pg from "pg";
-import { nodePostgresDatabase, deleteConversation } from "@netzlabor/pi-durable-postgres";
+import { nodePostgresDatabase, deleteConversation } from "@ainavite/pi-durable-postgres";
 
 // First stop request admission and await harness.close(context).
 // Use the SAME database and schema configuration as the closed storage.

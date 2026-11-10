@@ -1,8 +1,8 @@
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import type { ConversationId, DocumentId } from "@earendil-works/pi-durable";
+import type { ConversationId, DocumentId, EntryId } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import { applyPostgresMigrations, POSTGRES_MIGRATIONS } from "../src/migrations.js";
-import { freshStorage, testDatabase } from "./helpers.js";
+import { commitWrites, freshStorage, testDatabase } from "./helpers.js";
 
 describe("migrations and persistence", () => {
 	it("applies migrations idempotently", async () => {
@@ -47,13 +47,13 @@ describe("migrations and persistence", () => {
 		try {
 			const id = await fixture.storage.mintId<ConversationId>();
 			const documentId = await fixture.storage.mintId<DocumentId>();
-			const seq = await fixture.storage.commit([
+			const seq = await commitWrites(fixture.storage, [
 				{ type: "conversation", value: { id } },
 				{ type: "document.create", record: {
 					id: documentId, kind: "test", scope: { kind: "conversation", conversationId: id }, history: "rewindable", fork: "initial",
 				}, content: { kind: "base", version: 1, value: { count: 1 } } },
 			], context);
-			await fixture.storage.commit([{ type: "document.change", id: documentId,
+			const changedSeq = await commitWrites(fixture.storage, [{ type: "document.change", id: documentId,
 				content: { kind: "base", version: 1, value: { count: 2 } } }], context);
 			await fixture.storage.close(context);
 			const { storage } = await fixture.openStorage();
@@ -61,7 +61,9 @@ describe("migrations and persistence", () => {
 			expect((await storage.document(documentId, seq, context))?.value).toEqual({ count: 1 });
 			expect((await storage.document(documentId, "current", context))?.value).toEqual({ count: 2 });
 			expect(await storage.mintId()).toBeGreaterThan(documentId);
-			expect(await storage.commit([], context)).toBeGreaterThan(seq);
+			const nextEntryId = await storage.mintId<EntryId>();
+			const nextSeq = await commitWrites(storage, [{ type: "entry", value: { id: nextEntryId, conversationId: id, kind: "after-reopen" } }], context);
+			expect(nextSeq).toBeGreaterThan(changedSeq);
 		} finally { await fixture.cleanup(); }
 	});
 });

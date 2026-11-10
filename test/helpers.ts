@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+export { commitWrites } from "@earendil-works/pi-durable/testing";
 import pg from "pg";
 import { PostgresStorage } from "../src/storage.js";
 import { nodePostgresDatabase } from "../src/node.js";

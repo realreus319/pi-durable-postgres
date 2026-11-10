@@ -1,6 +1,7 @@
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { apply, type Op } from "@earendil-works/chord/delta";
-import { StorageRejected, type Storage } from "@earendil-works/pi-durable";
+import { StorageRequestError, type Storage } from "@earendil-works/pi-durable";
 import type {
 	ConversationId,
 	ConversationQuery,
@@ -56,6 +57,13 @@ type ScopeColumns = {
 	readonly ownerId: number;
 };
 
+class CommitRefusal extends Error {
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
+	this.name = "Error";
+	}
+}
+
 /** Apply an erased ID brand at a trusted numeric allocation or decoding boundary. */
 const idFromNumber = <I extends Id<string>>(value: number): I => value as I;
 
@@ -70,7 +78,7 @@ const encodeIndexedString = (value: string): string => JSON.stringify(value);
 const cursorId = <I extends Id<string>>(cursor: Cursor | undefined): I | undefined => {
 	const after = cursor?.after;
 	if (after === undefined) return undefined;
-	if (typeof after !== "number" || !Number.isSafeInteger(after)) throw new TypeError("Invalid storage cursor");
+	if (typeof after !== "number" || !Number.isSafeInteger(after)) throw new StorageRequestError("Invalid storage cursor");
 	return idFromNumber<I>(after);
 };
 
@@ -151,7 +159,7 @@ function resolveOrder(
 		? query.order
 		: undefined
 	if (cursorOrder !== undefined && queryOrder !== undefined && cursorOrder !== queryOrder) {
-		throw new Error(`cursor order mismatch: cursor has "${cursorOrder}" but query requests "${queryOrder}"`)
+		throw new StorageRequestError(`cursor order mismatch: cursor has "${cursorOrder}" but query requests "${queryOrder}"`)
 	}
 	return cursorOrder ?? queryOrder ?? defaultOrder
 }
@@ -164,7 +172,8 @@ function orderedCursor(id: number, order: 'ascending' | 'descending'): { readonl
 /** Read the `after` value from a cursor (the last returned ID). */
 function cursorAfterId(cursor: { readonly after?: unknown } | undefined): number | undefined {
 	const after = cursor?.after
-	if (typeof after !== 'number' || !Number.isSafeInteger(after)) return undefined
+	if (after === undefined) return undefined
+	if (typeof after !== 'number' || !Number.isSafeInteger(after)) throw new StorageRequestError("Invalid storage cursor")
 	return after
 }
 
@@ -208,29 +217,55 @@ export class PostgresStorage implements Storage {
 		}
 	}
 
-	async commit(writes: readonly StorageWrite[], _context: Context): Promise<Seq> {
+	async commit(
+		batches: readonly (readonly StorageWrite[])[],
+		receive: (index: number, seq: Seq) => void,
+		_context: Context,
+	): Promise<{ readonly stored: number; readonly refused?: unknown }> {
 		this.assertOpen();
-		const documentActions = this.prepareDocumentActions(writes);
-		const candidateNextId = this.candidateNextId(writes);
-		const seq = await this.db.transaction(async (transaction) => {
+		const seqs: Seq[] = [];
+		let refused: unknown;
+		let candidateNextId = this.nextId;
+		await this.db.transaction(async (transaction) => {
 			const metadata = await transaction.get<MetadataRow>(
 				"SELECT next_id, next_seq FROM durable_metadata WHERE singleton = 1",
 				[],
 			);
 			if (metadata === undefined) throw new Error("pi-durable-postgres metadata is missing");
-			const committedSeq = seqFromNumber(metadata.next_seq);
-			await this.checkGlobalIds(transaction, writes);
-			await this.checkDocumentActions(transaction, documentActions);
-			for (const write of writes) await this.applyTableWrite(transaction, write, committedSeq);
-			await this.applyDocumentActions(transaction, documentActions, committedSeq);
-			await transaction.run(
-				"UPDATE durable_metadata SET next_id = $1, next_seq = $2 WHERE singleton = 1",
-				[Math.max(metadata.next_id, candidateNextId), committedSeq + 1],
-			);
-			return committedSeq;
+			let nextSeq = metadata.next_seq;
+			for (const [index, writes] of batches.entries()) {
+				if (writes.length === 0) throw new TypeError("A storage commit batch must contain at least one write");
+				const savepoint = `pi_durable_batch_${index}`;
+				await transaction.exec(`SAVEPOINT ${savepoint}`);
+				try {
+					const documentActions = this.prepareDocumentActions(writes);
+					await this.checkGlobalIds(transaction, writes);
+					await this.checkDocumentActions(transaction, documentActions);
+					const seq = seqFromNumber(nextSeq);
+					for (const write of writes) await this.applyTableWrite(transaction, write, seq);
+					await this.applyDocumentActions(transaction, documentActions, seq);
+					await transaction.exec(`RELEASE SAVEPOINT ${savepoint}`);
+					seqs.push(seq);
+					nextSeq++;
+					candidateNextId = Math.max(candidateNextId, this.candidateNextId(writes));
+				} catch (error) {
+					await transaction.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+					await transaction.exec(`RELEASE SAVEPOINT ${savepoint}`);
+					if (!(error instanceof CommitRefusal)) throw error;
+					refused = error;
+					break;
+				}
+			}
+			if (seqs.length > 0) {
+				await transaction.run(
+					"UPDATE durable_metadata SET next_id = $1, next_seq = $2 WHERE singleton = 1",
+					[Math.max(metadata.next_id, candidateNextId), nextSeq],
+				);
+			}
 		});
 		this.nextId = Math.max(this.nextId, candidateNextId);
-		return seq;
+		for (const [index, seq] of seqs.entries()) receive(index, seq);
+		return refused === undefined ? { stored: seqs.length } : { stored: seqs.length, refused };
 	}
 
 	async mintId<I extends Id<string>>(): Promise<I> {
@@ -334,7 +369,7 @@ export class PostgresStorage implements Storage {
 		if (context !== undefined) {
 			const conversationId = idFromNumber<ConversationId>(idOrConversationId);
 			conversation = await this.readConversation(conversationId);
-			if (conversation === undefined) throw new Error(`Unknown conversation: ${conversationId}`);
+			if (conversation === undefined) throw new StorageRequestError(`Unknown conversation: ${conversationId}`);
 		}
 		const row = await this.db.get<EntryJsonRow>(
 			"SELECT record, commit_seq FROM entries WHERE id = $1",
@@ -359,7 +394,7 @@ export class PostgresStorage implements Storage {
 		atOrBeforeEntryId: EntryId | undefined,
 	): Promise<(EntryRecord & { readonly head: EntryId }) | undefined> {
 		let conversation = await this.readConversation(conversationId);
-		if (conversation === undefined) throw new Error(`Unknown conversation: ${conversationId}`);
+		if (conversation === undefined) throw new StorageRequestError(`Unknown conversation: ${conversationId}`);
 		let upper: number | undefined = atOrBeforeEntryId;
 		while (true) {
 			const row =
@@ -385,7 +420,7 @@ export class PostgresStorage implements Storage {
 		cursor: Cursor | undefined,
 	): Promise<Page<EntryRecord, Cursor>> {
 		let conversation = await this.readConversation(query.conversationId);
-		if (conversation === undefined) throw new Error(`Unknown conversation: ${query.conversationId}`);
+		if (conversation === undefined) throw new StorageRequestError(`Unknown conversation: ${query.conversationId}`);
 		const order = resolveOrder(query, cursor, 'descending');
 		const after = cursorAfterId(cursor);
 		const values: EntryRecord[] = [];
@@ -489,7 +524,9 @@ export class PostgresStorage implements Storage {
 			clauses.push(`kind = $${params.push(encodeIndexedString(query.kind))}`);
 		}
 		if (query.status !== undefined) {
-			clauses.push(`status = $${params.push(query.status)}`);
+			const indexedStatus = query.status === "sleeping" ? "waiting" : query.status;
+			clauses.push(`status = $${params.push(indexedStatus)}`);
+			clauses.push(`record::jsonb #>> '{state,status}' = $${params.push(query.status)}`);
 		}
 		if (query.abortRequested !== undefined) {
 			clauses.push(`abort_requested = $${params.push(query.abortRequested)}`);
@@ -678,7 +715,7 @@ export class PostgresStorage implements Storage {
 		if (row === undefined) return undefined;
 		const record = parseJson<DocumentRecord>(row.record);
 		if (at !== "current" && isCurrentOnly(record)) {
-			throw new Error(`Document ${id} does not retain historical content`);
+			throw new StorageRequestError(`Document ${id} does not retain historical content`);
 		}
 		if (!isAliveAt(record, at)) return undefined;
 		const upper = at === "current" ? Number.MAX_SAFE_INTEGER : at;
@@ -724,12 +761,12 @@ export class PostgresStorage implements Storage {
 			)?.record_type;
 			const earlier = claimed.get(id);
 			if (table === "conversation" || table === "entry" || table === "document") {
-				if (existing !== undefined) throw new Error(`ID ${id} already belongs to ${existing}`);
-				if (earlier !== undefined) throw new Error(`ID ${id} is written more than once`);
+				if (existing !== undefined) throw new CommitRefusal(`ID ${id} already belongs to ${existing}`);
+				if (earlier !== undefined) throw new CommitRefusal(`ID ${id} is written more than once`);
 			} else {
 				if (existing !== undefined && existing !== table)
-					throw new Error(`ID ${id} already belongs to ${existing}`);
-				if (earlier !== undefined && earlier !== table) throw new Error(`ID ${id} is written as two record types`);
+					throw new CommitRefusal(`ID ${id} already belongs to ${existing}`);
+				if (earlier !== undefined && earlier !== table) throw new CommitRefusal(`ID ${id} is written as two record types`);
 			}
 			claimed.set(id, table);
 		}
@@ -755,26 +792,26 @@ export class PostgresStorage implements Storage {
 			switch (write.type) {
 				case "document.create":
 					if (action.create !== undefined || action.content !== undefined || action.copy !== undefined) {
-						throw new Error(`Document ${id} has more than one content command`);
+						throw new CommitRefusal(`Document ${id} has more than one content command`);
 					}
 					action.create = write.record;
 					action.content = write.content;
 					break;
 				case "document.copy":
 					if (action.create !== undefined || action.content !== undefined || action.copy !== undefined) {
-						throw new Error(`Document ${id} has more than one content command`);
+						throw new CommitRefusal(`Document ${id} has more than one content command`);
 					}
 					action.create = write.record;
 					action.copy = write.source;
 					break;
 				case "document.change":
 					if (action.content !== undefined || action.copy !== undefined) {
-						throw new Error(`Document ${id} has more than one content command`);
+						throw new CommitRefusal(`Document ${id} has more than one content command`);
 					}
 					action.content = write.content;
 					break;
 				case "document.retire":
-					if (action.retire) throw new Error(`Document ${id} is retired more than once`);
+					if (action.retire) throw new CommitRefusal(`Document ${id} is retired more than once`);
 					action.retire = true;
 					break;
 			}
@@ -789,21 +826,21 @@ export class PostgresStorage implements Storage {
 		const liveCounts = new Map<string, number>();
 		for (const [id, action] of actions) {
 			if (action.copy !== undefined && actions.has(action.copy.id)) {
-				throw new StorageRejected(`Document copy ${id} source is changed in the copy batch`);
+				throw new CommitRefusal(`Document copy ${id} source is changed in the copy batch`);
 			}
 			const row = await executor.get<JsonRow>("SELECT record FROM documents WHERE id = $1", [id]);
 			const existing = row === undefined ? undefined : parseJson<DocumentRecord>(row.record);
-			if (action.create === undefined && existing === undefined) throw new Error(`Unknown document: ${id}`);
-			if (action.create !== undefined && existing !== undefined) throw new Error(`Document ${id} already exists`);
-			if (existing?.retiredAt !== undefined) throw new Error(`Document ${id} is retired`);
+			if (action.create === undefined && existing === undefined) throw new CommitRefusal(`Unknown document: ${id}`);
+			if (action.create !== undefined && existing !== undefined) throw new CommitRefusal(`Document ${id} already exists`);
+			if (existing?.retiredAt !== undefined) throw new CommitRefusal(`Document ${id} is retired`);
 			if (action.content?.kind === "delta") {
 				const previous = await executor.get<{ readonly version: number }>(
 					"SELECT version FROM document_revisions WHERE document_id = $1 ORDER BY seq DESC LIMIT 1",
 					[id],
 				);
-				if (previous === undefined) throw new Error(`Document ${id} delta has no base`);
+				if (previous === undefined) throw new CommitRefusal(`Document ${id} delta has no base`);
 				if (previous.version !== action.content.version) {
-					throw new Error(`Document ${id} version transition requires a base`);
+					throw new CommitRefusal(`Document ${id} version transition requires a base`);
 				}
 			}
 			const record = action.create ?? existing!;
@@ -815,7 +852,7 @@ export class PostgresStorage implements Storage {
 			liveCounts.set(key, live);
 		}
 		for (const live of liveCounts.values()) {
-			if (live > 1) throw new Error("Document address already has a current incarnation");
+			if (live > 1) throw new CommitRefusal("Document address already has a current incarnation");
 		}
 	}
 
@@ -874,7 +911,7 @@ export class PostgresStorage implements Storage {
 						write.value.id,
 						write.value.conversationId,
 						encodeIndexedString(write.value.kind),
-						write.value.state.status,
+						write.value.state.status === "sleeping" ? "waiting" : write.value.state.status,
 						write.value.abortRequested,
 						write.value.background,
 						encodeJson(write.value),
@@ -919,25 +956,28 @@ export class PostgresStorage implements Storage {
 		for (const [id, action] of actions) {
 			let content = action.content;
 			if (action.copy !== undefined) {
+				let stored: StoredDocument | undefined;
 				try {
-					const stored = await this.materializeDocument(executor, action.copy.id, action.copy.at);
-					if (stored === undefined) throw new Error(`Fork source document ${action.copy.id} cannot be read`);
-					const create = action.create!;
-					if (
-						stored.record.scope.kind !== "conversation" ||
-						create.scope.kind !== "conversation" ||
-						stored.record.kind !== create.kind ||
-						stored.record.key !== create.key ||
-						stored.record.history !== create.history ||
-						stored.record.fork !== create.fork
-					) {
-						throw new Error(`Fork source document ${action.copy.id} does not match the copied record`);
-					}
-					content = { kind: "base", version: stored.version, value: stored.value };
+					stored = await this.materializeDocument(executor, action.copy.id, action.copy.at);
 				} catch (error) {
-					if (error instanceof StorageRejected) throw error;
-					throw new StorageRejected(`Document copy ${id} was rejected`, { cause: error });
+					if (error instanceof StorageRequestError) {
+						throw new CommitRefusal(`Document copy ${id} source cannot be read`, { cause: error });
+					}
+					throw error;
 				}
+				if (stored === undefined) throw new CommitRefusal(`Fork source document ${action.copy.id} cannot be read`);
+				const create = action.create!;
+				if (
+					stored.record.scope.kind !== "conversation" ||
+					create.scope.kind !== "conversation" ||
+					stored.record.kind !== create.kind ||
+					stored.record.key !== create.key ||
+					stored.record.history !== create.history ||
+					stored.record.fork !== create.fork
+				) {
+					throw new CommitRefusal(`Fork source document ${action.copy.id} does not match the copied record`);
+				}
+				content = { kind: "base", version: stored.version, value: stored.value };
 			}
 			let record: DocumentRecord;
 			if (action.create !== undefined) {

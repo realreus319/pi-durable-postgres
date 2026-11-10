@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0 — 2026-11-10
+
+- Updated the storage adapter to the Pi Durable, Chord and Pi AI 1.5.1 APIs.
+- Implemented Pi Durable's batched `Storage.commit()` contract with one PostgreSQL
+  transaction and per-batch savepoints; semantic refusals preserve earlier accepted
+  batches, while I/O and transaction failures reject the operation.
+- Preserved the existing PostgreSQL schema: the new `sleeping` task state is encoded
+  using the existing `waiting` status column and filtered by the JSON state payload.
+- Re-ran the upstream storage conformance and adapter regression suite against an
+  isolated PostgreSQL 17 test instance.
+- Published package identity moved to the `@ainavite` npm organization scope.
+
 ## 0.1.1 — 2026-10-05
 
 - Re-validated against Pi Durable, Chord and Pi AI 1.0.3. Upstream changes include

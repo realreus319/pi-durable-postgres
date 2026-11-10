@@ -1,7 +1,7 @@
 # PostgreSQL adapter contract
 
 Import the driver-independent facade and storage through
-`@netzlabor/pi-durable-postgres/core`. The supported implementation is currently
+`@ainavite/pi-durable-postgres/core`. The supported implementation is currently
 the Node `pg` adapter; another driver must satisfy this entire contract before
 claiming compatibility.
 

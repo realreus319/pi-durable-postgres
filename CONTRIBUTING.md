@@ -1,7 +1,7 @@
 # Contributing
 
 Bug reports and focused pull requests are welcome at
-https://github.com/j-koester/pi-durable-postgres.
+https://github.com/realreus319/pi-durable-postgres.
 
 ## Local checks
 

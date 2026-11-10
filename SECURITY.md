@@ -4,7 +4,7 @@ This package is alpha. Security fixes target the latest release and its document
 validated Pi Durable peer version.
 
 Report vulnerabilities through GitHub private vulnerability reporting at
-https://github.com/j-koester/pi-durable-postgres/security/advisories/new
+https://github.com/realreus319/pi-durable-postgres/security/advisories/new
 when enabled. If private reporting is unavailable, open a minimal issue requesting
 a private contact channel, without exploit details, database dumps or credentials.
 

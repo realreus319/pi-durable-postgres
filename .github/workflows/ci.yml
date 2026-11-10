@@ -55,13 +55,15 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment: npm
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.19.0"
-          cache: pnpm
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
       - run: pnpm install --frozen-lockfile
       - name: Check release tag and package identity
@@ -69,8 +71,8 @@ jobs:
           node --input-type=module -e '
             import { readFileSync } from "node:fs";
             const pkg = JSON.parse(readFileSync("package.json", "utf8"));
-            if (pkg.name !== "@netzlabor/pi-durable-postgres" || process.env.GITHUB_REF_NAME !== "v" + pkg.version) {
-              throw new Error("Release tag must match the version of @netzlabor/pi-durable-postgres");
+            if (pkg.name !== "@ainavite/pi-durable-postgres" || process.env.GITHUB_REF_NAME !== "v" + pkg.version) {
+              throw new Error("Release tag must match the version of @ainavite/pi-durable-postgres");
             }
           '
       - name: Check for an existing publication of this commit
@@ -93,10 +95,9 @@ jobs:
               console.log("This exact commit is already published; skipping duplicate upload");
             }
           '
+      - name: Install npm with trusted publishing support
+        if: steps.publication.outputs.published != 'true'
+        run: npm install --global npm@11.5.1
       - name: Publish public scoped package
         if: steps.publication.outputs.published != 'true'
-        run: |
-          test -n "$NODE_AUTH_TOKEN" || { echo "Configure the npm environment NPM_TOKEN secret"; exit 1; }
-          npm publish --access public --registry=https://registry.npmjs.org --@netzlabor:registry=https://registry.npmjs.org
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --registry=https://registry.npmjs.org
